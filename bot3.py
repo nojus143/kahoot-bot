@@ -1,41 +1,54 @@
 from flask import Flask, request, jsonify
-import requests, re
 from flask_cors import CORS
+import requests
 
 app = Flask(__name__)
-CORS(app) # This allows your Google Site to talk to this script
+CORS(app)
 
 @app.route('/get_answers', methods=['GET'])
 def get_answers():
-    user_input = request.args.get('url')
-    uuid_match = re.search(r'([a-f0-9\-]{36})', user_input)
-    if not uuid_match:
-        return jsonify({"error": "Invalid URL/UUID"}), 400
-    
-    quiz_id = uuid_match.group(1)
-    details_url = f"https://create.kahoot.it/rest/kahoots/{quiz_id}"
-    
-    try:
-        response = requests.get(details_url, headers={"User-Agent": "Mozilla/5.0"})
-        quiz_data = response.json()
-        results = []
-        
-        color_map = {0: "🔴 RED", 1: "🔵 BLUE", 2: "🟡 YELLOW", 3: "🟢 GREEN"}
+    kahoot_id = request.args.get('url')
+    if not kahoot_id:
+        return jsonify({"error": "No ID provided"}), 400
 
-        for q in quiz_data.get('questions', []):
-            question_text = re.sub('<[^<]+?>', '', q.get('question', ''))
-            correct_answers = []
-            if 'choices' in q:
-                for idx, choice in enumerate(q['choices']):
-                    if choice.get('correct'):
-                        ans_text = re.sub('<[^<]+?>', '', choice.get('answer', ''))
-                        correct_answers.append(f"{color_map.get(idx)}: {ans_text}")
-            
-            results.append({"question": question_text, "answers": correct_answers})
-            
-        return jsonify({"title": quiz_data.get('title'), "questions": results})
+    # Clean the ID if a full URL was pasted
+    if "details/" in kahoot_id:
+        kahoot_id = kahoot_id.split("details/")[1].split("/")[0]
+
+    # THE FIX: Added 'User-Agent' to trick Kahoot into thinking we are a browser
+    api_url = f"https://create.kahoot.it/rest/kahoots/{kahoot_id}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json"
+    }
+
+    try:
+        response = requests.get(api_url, headers=headers)
+        
+        # Check if Kahoot actually gave us data
+        if response.status_code == 403:
+            return jsonify({"error": "Kahoot is Private or Restricted"}), 403
+        if response.status_code != 200:
+            return jsonify({"error": f"Kahoot API returned error {response.status_code}"}), response.status_code
+
+        data = response.json()
+        
+        questions = []
+        for q in data.get('questions', []):
+            # Only get the correct answers
+            correct_choices = [choice.get('answer') for choice in q.get('choices', []) if choice.get('correct')]
+            questions.append({
+                "question": q.get('question'),
+                "answers": correct_choices
+            })
+
+        return jsonify({
+            "title": data.get('title'),
+            "questions": questions
+        })
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
